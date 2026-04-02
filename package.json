@@ -24,6 +24,9 @@
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
   },
+  "dependencies": {
+    "@san-tian/pi-project-paths": "git+https://github.com/san-tian/pi-project-paths.git#v0.1.0"
+  },
   "pi": {
     "extensions": [
       "index.ts"

@@ -39,7 +39,7 @@ Example local package entry:
 
 ## Recommended usage: just ask Pi
 You ask Pi to set up a ralph-wiggum loop.
-- Pi sets up `.pi/ralph/<name>.md` with goals and a checklist (like a list of features to build, errors to check, or files to refactor)
+- Pi sets up `~/.pi/projects/<project-id>/ralph/<name>.md` with goals and a checklist (like a list of features to build, errors to check, or files to refactor)
 - You let Pi know:
   1. What the task is and completion / tests to run
   2. How many items to process per iteration
@@ -54,7 +54,7 @@ You ask Pi to set up a ralph-wiggum loop.
   - You hit `esc` (pausing the loop)
 If you hit `esc`, you can run `/ralph-stop` to clear the loop. Alternatively, just tell Pi to continue to keep going.
 
-Generated loop state lives under `.pi/ralph/`, and local debug payloads may appear under `.tmp/`. Keep both out of git if your task notes or provider payloads may contain sensitive project details.
+Generated loop state lives under `~/.pi/projects/<project-id>/ralph/`, and local debug payloads may appear under `.tmp/`. Keep `.tmp/` out of git if provider payloads may contain sensitive project details.
 
 ## Commands
 
@@ -69,7 +69,7 @@ Generated loop state lives under `.pi/ralph/`, and local debug payloads may appe
 | `/ralph archive <name>` | Move loop to archive |
 | `/ralph clean [--all]` | Clean completed loops |
 | `/ralph cancel <name>` | Delete a loop |
-| `/ralph nuke [--yes]` | Delete all `.pi/ralph` data |
+| `/ralph nuke [--yes]` | Delete all managed Ralph data |
 
 ### Options for start
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Store managed Ralph state under `~/.pi/projects/<project-id>/ralph/` instead of the project directory, with migration from older in-repo locations.
+
 ## 0.2.1 - 2026-04-02
 
 ### Fixed

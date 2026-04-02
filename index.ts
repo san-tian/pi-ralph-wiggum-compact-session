@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { getPiProjectSubdir } from "@san-tian/pi-project-paths";
 
 const RALPH_DIR = path.join(".pi", "ralph");
 const LEGACY_RALPH_DIR = ".ralph";
@@ -75,23 +76,82 @@ export default function (pi: ExtensionAPI) {
 
 	// --- File helpers ---
 
+	const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+
+	function tryCleanupPath(targetPath: string): void {
+		try {
+			const stats = fs.statSync(targetPath);
+			if (stats.isDirectory()) {
+				fs.rmSync(targetPath, { recursive: true, force: true });
+			} else {
+				fs.unlinkSync(targetPath);
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	function tryMovePath(srcPath: string, dstPath: string): boolean {
+		if (!fs.existsSync(srcPath) || fs.existsSync(dstPath)) return false;
+
+		try {
+			fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+			fs.renameSync(srcPath, dstPath);
+			return true;
+		} catch {
+			/* fall back to copy + delete */
+		}
+
+		try {
+			const stats = fs.statSync(srcPath);
+			fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+			if (stats.isDirectory()) {
+				fs.cpSync(srcPath, dstPath, { recursive: true, errorOnExist: true });
+				fs.rmSync(srcPath, { recursive: true, force: true });
+			} else {
+				fs.copyFileSync(srcPath, dstPath);
+				fs.unlinkSync(srcPath);
+			}
+			return true;
+		} catch {
+			tryCleanupPath(dstPath);
+			return false;
+		}
+	}
+
 	const ralphDir = (ctx: ExtensionContext) => {
-		const nextDir = path.resolve(ctx.cwd, RALPH_DIR);
+		const nextDir = getPiProjectSubdir(ctx.cwd, "ralph");
+		const projectLocalDir = path.resolve(ctx.cwd, RALPH_DIR);
 		const legacyDir = path.resolve(ctx.cwd, LEGACY_RALPH_DIR);
-		if (!fs.existsSync(nextDir) && fs.existsSync(legacyDir)) {
-			try {
-				fs.mkdirSync(path.dirname(nextDir), { recursive: true });
-				fs.renameSync(legacyDir, nextDir);
-			} catch {
-				// Fall back to the legacy location if migration fails.
+		if (!fs.existsSync(nextDir)) {
+			if (fs.existsSync(projectLocalDir)) {
+				tryMovePath(projectLocalDir, nextDir);
+			} else if (fs.existsSync(legacyDir)) {
+				tryMovePath(legacyDir, nextDir);
 			}
 		}
 		if (fs.existsSync(nextDir)) return nextDir;
+		if (fs.existsSync(projectLocalDir)) return projectLocalDir;
 		if (fs.existsSync(legacyDir)) return legacyDir;
 		return nextDir;
 	};
 	const archiveDir = (ctx: ExtensionContext) => path.join(ralphDir(ctx), "archive");
-	const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+	const isManagedTaskFile = (ctx: ExtensionContext, name: string, taskFile: string) => {
+		const fileName = `${sanitize(name)}.md`;
+		const resolvedTaskFile = path.resolve(ctx.cwd, taskFile);
+		const managedLocations = [
+			path.resolve(ctx.cwd, path.join(RALPH_DIR, fileName)),
+			path.resolve(ctx.cwd, path.join(LEGACY_RALPH_DIR, fileName)),
+			getPath(ctx, name, ".md"),
+			getPath(ctx, name, ".md", true),
+		];
+		return managedLocations.includes(resolvedTaskFile);
+	};
+	const normalizeTaskFile = (ctx: ExtensionContext, name: string, taskFile: string | undefined, archived = false) => {
+		if (!taskFile) return getPath(ctx, name, ".md", archived);
+		if (isManagedTaskFile(ctx, name, taskFile)) return getPath(ctx, name, ".md", archived);
+		return taskFile;
+	};
 	const getSessionOwner = (ctx: ExtensionContext) => {
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (sessionFile) return sessionFile;
@@ -174,11 +234,12 @@ export default function (pi: ExtensionAPI) {
 
 	// --- State management ---
 
-	function migrateState(raw: Partial<LoopState> & { name: string }): LoopState {
+	function migrateState(ctx: ExtensionContext, raw: Partial<LoopState> & { name: string }, archived = false): LoopState {
 		if (!raw.status) raw.status = raw.active ? "active" : "paused";
 		raw.active = raw.status === "active";
 		if (raw.pendingContinuation === undefined) raw.pendingContinuation = false;
 		if (raw.ownerSession === undefined) raw.ownerSession = null;
+		raw.taskFile = normalizeTaskFile(ctx, raw.name, raw.taskFile, archived);
 		// Migrate old field names
 		if ("reflectEveryItems" in raw && !raw.reflectEvery) {
 			raw.reflectEvery = (raw as any).reflectEveryItems;
@@ -193,7 +254,7 @@ export default function (pi: ExtensionAPI) {
 		const content = tryRead(getPath(ctx, name, ".state.json", archived));
 		if (!content) return null;
 		try {
-			return migrateState(JSON.parse(content));
+			return migrateState(ctx, JSON.parse(content), archived);
 		} catch {
 			return null;
 		}
@@ -201,6 +262,7 @@ export default function (pi: ExtensionAPI) {
 
 	function saveState(ctx: ExtensionContext, state: LoopState, archived = false): void {
 		state.active = state.status === "active";
+		state.taskFile = normalizeTaskFile(ctx, state.name, state.taskFile, archived);
 		const filePath = getPath(ctx, state.name, ".state.json", archived);
 		ensureDir(filePath);
 		fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
@@ -216,7 +278,7 @@ export default function (pi: ExtensionAPI) {
 				const content = tryRead(path.join(dir, f));
 				if (!content) return null;
 				try {
-					return migrateState(JSON.parse(content));
+					return migrateState(ctx, JSON.parse(content), archived);
 				} catch {
 					return null;
 				}
@@ -415,7 +477,7 @@ export default function (pi: ExtensionAPI) {
 
 			const isPath = args.name.includes("/") || args.name.includes("\\");
 			const loopName = isPath ? sanitize(path.basename(args.name, path.extname(args.name))) : args.name;
-			const taskFile = isPath ? args.name : path.join(RALPH_DIR, `${loopName}.md`);
+			const taskFile = isPath ? args.name : getPath(ctx, loopName, ".md");
 
 			pauseCurrentLoopForSwitch(ctx, loopName, `Paused Ralph loop: ${currentLoop} (starting ${loopName})`);
 
@@ -558,15 +620,15 @@ export default function (pi: ExtensionAPI) {
 			if (currentLoop === loopName) currentLoop = null;
 
 			const srcState = getPath(ctx, loopName, ".state.json");
-			const dstState = getPath(ctx, loopName, ".state.json", true);
-			ensureDir(dstState);
-			if (fs.existsSync(srcState)) fs.renameSync(srcState, dstState);
 
 			const srcTask = path.resolve(ctx.cwd, state.taskFile);
 			if (srcTask.startsWith(ralphDir(ctx)) && !srcTask.startsWith(archiveDir(ctx))) {
 				const dstTask = getPath(ctx, loopName, ".md", true);
-				if (fs.existsSync(srcTask)) fs.renameSync(srcTask, dstTask);
+				if (fs.existsSync(srcTask) && tryMovePath(srcTask, dstTask)) state.taskFile = dstTask;
 			}
+
+			saveState(ctx, state, true);
+			tryDelete(srcState);
 
 			ctx.ui.notify(`Archived: ${loopName}`, "info");
 			updateUI(ctx);
@@ -613,11 +675,10 @@ export default function (pi: ExtensionAPI) {
 
 		nuke(rest, ctx) {
 			const force = rest.trim() === "--yes";
-			const warning =
-				"This deletes all Ralph state, task, and archive files under .pi/ralph. External task files are not removed.";
+			const dir = ralphDir(ctx);
+			const warning = `This deletes all Ralph state, task, and archive files under ${dir}. External task files are not removed.`;
 
 			const run = () => {
-				const dir = ralphDir(ctx);
 				if (!fs.existsSync(dir)) {
 					if (ctx.hasUI) ctx.ui.notify("No Ralph storage directory found.", "info");
 					return;
@@ -658,7 +719,7 @@ Commands:
   /ralph archive <name>               Move loop to archive
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
-  /ralph nuke [--yes]                 Delete all Ralph data under .pi/ralph
+  /ralph nuke [--yes]                 Delete all managed Ralph data
   /ralph-stop                         Stop active loop (idle only)
 
 Options:
@@ -726,7 +787,7 @@ Examples:
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const loopName = sanitize(params.name);
-			const taskFile = path.join(RALPH_DIR, `${loopName}.md`);
+			const taskFile = getPath(ctx, loopName, ".md");
 
 			pauseCurrentLoopForSwitch(ctx, loopName);
 
