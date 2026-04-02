@@ -17,7 +17,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
-    "SKILL.md",
+    "skills",
     "index.ts"
   ],
   "peerDependencies": {
@@ -32,7 +32,7 @@
       "index.ts"
     ],
     "skills": [
-      "SKILL.md"
+      "./skills"
     ],
     "image": "https://github.com/user-attachments/assets/68cdab11-76c6-4aed-9ea1-558cbb267ea6"
   },
