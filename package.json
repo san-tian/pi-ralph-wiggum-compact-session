@@ -10,6 +10,9 @@
     "compaction",
     "session"
   ],
+  "scripts": {
+    "typecheck": "tsc --noEmit --module preserve --moduleResolution bundler --target es2022 --skipLibCheck index.ts"
+  },
   "files": [
     "CHANGELOG.md",
     "LICENSE",
@@ -29,5 +32,11 @@
       "SKILL.md"
     ],
     "image": "https://github.com/user-attachments/assets/68cdab11-76c6-4aed-9ea1-558cbb267ea6"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.64.0",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
   }
 }

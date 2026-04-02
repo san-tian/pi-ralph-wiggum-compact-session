@@ -8,6 +8,8 @@ This one is cool because:
 - You can keep multiple loop definitions in the same repo and resume the one you want in the current session
 - You can ask Pi to self-reflect at regular intervals so it doesn't mindlessly grind through wrong instructions (optional)
 
+Active loops are now session-owned: unrelated Pi sessions in the same repo will not auto-bind to them. Use `/ralph resume <name> --takeover` if you intentionally want to claim a loop from another session.
+
 <img width="432" height="357" alt="Screenshot 2026-01-07 at 17 16 24" src="https://github.com/user-attachments/assets/68cdab11-76c6-4aed-9ea1-558cbb267ea6" />
 
 **Note: This is a flat version without subagents, similar to the [Anthropic plugins implementation](https://github.com/anthropics/claude-code-plugins/tree/main/ralph-loop).**
@@ -37,7 +39,7 @@ Example local package entry:
 
 ## Recommended usage: just ask Pi
 You ask Pi to set up a ralph-wiggum loop.
-- Pi sets up `.ralph/<name>.md` with goals and a checklist (like a list of features to build, errors to check, or files to refactor)
+- Pi sets up `.pi/ralph/<name>.md` with goals and a checklist (like a list of features to build, errors to check, or files to refactor)
 - You let Pi know:
   1. What the task is and completion / tests to run
   2. How many items to process per iteration
@@ -52,7 +54,7 @@ You ask Pi to set up a ralph-wiggum loop.
   - You hit `esc` (pausing the loop)
 If you hit `esc`, you can run `/ralph-stop` to clear the loop. Alternatively, just tell Pi to continue to keep going.
 
-Generated loop state lives under `.ralph/`, and local debug payloads may appear under `.tmp/`. Keep both out of git if your task notes or provider payloads may contain sensitive project details.
+Generated loop state lives under `.pi/ralph/`, and local debug payloads may appear under `.tmp/`. Keep both out of git if your task notes or provider payloads may contain sensitive project details.
 
 ## Commands
 
@@ -67,7 +69,7 @@ Generated loop state lives under `.ralph/`, and local debug payloads may appear 
 | `/ralph archive <name>` | Move loop to archive |
 | `/ralph clean [--all]` | Clean completed loops |
 | `/ralph cancel <name>` | Delete a loop |
-| `/ralph nuke [--yes]` | Delete all .ralph data |
+| `/ralph nuke [--yes]` | Delete all `.pi/ralph` data |
 
 ### Options for start
 

@@ -8,7 +8,8 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-const RALPH_DIR = ".ralph";
+const RALPH_DIR = path.join(".pi", "ralph");
+const LEGACY_RALPH_DIR = ".ralph";
 const COMPLETE_MARKER = "<promise>COMPLETE</promise>";
 const RALPH_COMPACT_INSTRUCTIONS = `This compaction is for a Ralph loop iteration handoff inside the same session.
 
@@ -59,6 +60,7 @@ interface LoopState {
 	reflectInstructions: string;
 	active: boolean; // Backwards compat
 	status: LoopStatus;
+	ownerSession: string | null;
 	startedAt: string;
 	completedAt?: string;
 	lastReflectionAt: number; // Last iteration we reflected at
@@ -69,12 +71,69 @@ const STATUS_ICONS: Record<LoopStatus, string> = { active: "▶", paused: "⏸",
 
 export default function (pi: ExtensionAPI) {
 	let currentLoop: string | null = null;
+	let runtimeSessionKey: string | null = null;
 
 	// --- File helpers ---
 
-	const ralphDir = (ctx: ExtensionContext) => path.resolve(ctx.cwd, RALPH_DIR);
+	const ralphDir = (ctx: ExtensionContext) => {
+		const nextDir = path.resolve(ctx.cwd, RALPH_DIR);
+		const legacyDir = path.resolve(ctx.cwd, LEGACY_RALPH_DIR);
+		if (!fs.existsSync(nextDir) && fs.existsSync(legacyDir)) {
+			try {
+				fs.mkdirSync(path.dirname(nextDir), { recursive: true });
+				fs.renameSync(legacyDir, nextDir);
+			} catch {
+				// Fall back to the legacy location if migration fails.
+			}
+		}
+		if (fs.existsSync(nextDir)) return nextDir;
+		if (fs.existsSync(legacyDir)) return legacyDir;
+		return nextDir;
+	};
 	const archiveDir = (ctx: ExtensionContext) => path.join(ralphDir(ctx), "archive");
 	const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+	const getSessionOwner = (ctx: ExtensionContext) => {
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		if (sessionFile) return sessionFile;
+		if (!runtimeSessionKey) {
+			runtimeSessionKey = `ephemeral:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+		}
+		return runtimeSessionKey;
+	};
+
+	function isOwnedByCurrentSession(ctx: ExtensionContext, state: LoopState): boolean {
+		return state.ownerSession === getSessionOwner(ctx);
+	}
+
+	function clearCurrentLoop(ctx: ExtensionContext): void {
+		if (!currentLoop) return;
+		currentLoop = null;
+		updateUI(ctx);
+	}
+
+	function getCurrentOwnedLoopState(ctx: ExtensionContext): LoopState | null {
+		if (!currentLoop) return null;
+		const state = loadState(ctx, currentLoop);
+		if (!state || state.status !== "active" || !isOwnedByCurrentSession(ctx, state)) {
+			clearCurrentLoop(ctx);
+			return null;
+		}
+		return state;
+	}
+
+	function pauseCurrentLoopForSwitch(ctx: ExtensionContext, nextLoopName: string, reason?: string): void {
+		if (!currentLoop || currentLoop === nextLoopName) return;
+		const current = loadState(ctx, currentLoop);
+		if (!current) {
+			clearCurrentLoop(ctx);
+			return;
+		}
+		if (current.status === "active" && isOwnedByCurrentSession(ctx, current)) {
+			pauseLoop(ctx, current, reason);
+			return;
+		}
+		clearCurrentLoop(ctx);
+	}
 
 	function getPath(ctx: ExtensionContext, name: string, ext: string, archived = false): string {
 		const dir = archived ? archiveDir(ctx) : ralphDir(ctx);
@@ -119,6 +178,7 @@ export default function (pi: ExtensionAPI) {
 		if (!raw.status) raw.status = raw.active ? "active" : "paused";
 		raw.active = raw.status === "active";
 		if (raw.pendingContinuation === undefined) raw.pendingContinuation = false;
+		if (raw.ownerSession === undefined) raw.ownerSession = null;
 		// Migrate old field names
 		if ("reflectEveryItems" in raw && !raw.reflectEvery) {
 			raw.reflectEvery = (raw as any).reflectEveryItems;
@@ -170,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 		state.status = "paused";
 		state.active = false;
 		state.pendingContinuation = false;
+		state.ownerSession = null;
 		saveState(ctx, state);
 		currentLoop = null;
 		updateUI(ctx);
@@ -181,6 +242,7 @@ export default function (pi: ExtensionAPI) {
 		state.completedAt = new Date().toISOString();
 		state.active = false;
 		state.pendingContinuation = false;
+		state.ownerSession = null;
 		saveState(ctx, state);
 		currentLoop = null;
 		updateUI(ctx);
@@ -192,6 +254,7 @@ export default function (pi: ExtensionAPI) {
 		state.completedAt = new Date().toISOString();
 		state.active = false;
 		state.pendingContinuation = false;
+		state.ownerSession = null;
 		saveState(ctx, state);
 		currentLoop = null;
 		updateUI(ctx);
@@ -204,7 +267,8 @@ export default function (pi: ExtensionAPI) {
 		const status = `${STATUS_ICONS[l.status]} ${l.status}`;
 		const iter = l.maxIterations > 0 ? `${l.iteration}/${l.maxIterations}` : `${l.iteration}`;
 		const pending = l.pendingContinuation ? " | compacting" : "";
-		return `${l.name}: ${status}${pending} (iteration ${iter})`;
+		const owner = l.status === "active" ? ` | ${l.ownerSession ? "claimed" : "unclaimed"}` : "";
+		return `${l.name}: ${status}${pending}${owner} (iteration ${iter})`;
 	}
 
 	function updateUI(ctx: ExtensionContext): void {
@@ -309,6 +373,7 @@ export default function (pi: ExtensionAPI) {
 			itemsPerIteration: 0,
 			reflectEvery: 0,
 			reflectInstructions: DEFAULT_REFLECT_INSTRUCTIONS,
+			takeover: false,
 		};
 
 		for (let i = 0; i < tokens.length; i++) {
@@ -326,6 +391,8 @@ export default function (pi: ExtensionAPI) {
 			} else if (tok === "--reflect-instructions" && next) {
 				result.reflectInstructions = next.replace(/^"|"$/g, "");
 				i++;
+			} else if (tok === "--takeover") {
+				result.takeover = true;
 			} else if (!tok.startsWith("--")) {
 				result.name = tok;
 			}
@@ -350,12 +417,7 @@ export default function (pi: ExtensionAPI) {
 			const loopName = isPath ? sanitize(path.basename(args.name, path.extname(args.name))) : args.name;
 			const taskFile = isPath ? args.name : path.join(RALPH_DIR, `${loopName}.md`);
 
-			if (currentLoop && currentLoop !== loopName) {
-				const current = loadState(ctx, currentLoop);
-				if (current?.status === "active") {
-					pauseLoop(ctx, current, `Paused Ralph loop: ${currentLoop} (starting ${loopName})`);
-				}
-			}
+			pauseCurrentLoopForSwitch(ctx, loopName, `Paused Ralph loop: ${currentLoop} (starting ${loopName})`);
 
 			const existing = loadState(ctx, loopName);
 			if (existing?.status === "active") {
@@ -380,6 +442,7 @@ export default function (pi: ExtensionAPI) {
 				reflectInstructions: args.reflectInstructions,
 				active: true,
 				status: "active",
+				ownerSession: getSessionOwner(ctx),
 				startedAt: existing?.startedAt || new Date().toISOString(),
 				lastReflectionAt: 0,
 				pendingContinuation: false,
@@ -398,26 +461,19 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		stop(_rest, ctx) {
-			if (!currentLoop) {
-				// Check persisted state for any active loop
-				const active = listLoops(ctx).find((l) => l.status === "active");
-				if (active) {
-					pauseLoop(ctx, active, `Paused Ralph loop: ${active.name} (iteration ${active.iteration})`);
-				} else {
-					ctx.ui.notify("No active Ralph loop", "warning");
-				}
+			const state = getCurrentOwnedLoopState(ctx);
+			if (!state) {
+				ctx.ui.notify("No active Ralph loop in this session", "warning");
 				return;
 			}
-			const state = loadState(ctx, currentLoop);
-			if (state) {
-				pauseLoop(ctx, state, `Paused Ralph loop: ${currentLoop} (iteration ${state.iteration})`);
-			}
+			pauseLoop(ctx, state, `Paused Ralph loop: ${state.name} (iteration ${state.iteration})`);
 		},
 
 		resume(rest, ctx) {
-			const loopName = rest.trim();
+			const args = parseArgs(rest);
+			const loopName = args.name.trim();
 			if (!loopName) {
-				ctx.ui.notify("Usage: /ralph resume <name>", "warning");
+				ctx.ui.notify("Usage: /ralph resume <name> [--takeover]", "warning");
 				return;
 			}
 
@@ -431,14 +487,17 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Pause current loop if different
-			if (currentLoop && currentLoop !== loopName) {
-				const curr = loadState(ctx, currentLoop);
-				if (curr) pauseLoop(ctx, curr);
+			if (state.status === "active" && state.ownerSession && !isOwnedByCurrentSession(ctx, state) && !args.takeover) {
+				ctx.ui.notify(`Loop "${loopName}" is active in another session. Use /ralph resume ${loopName} --takeover to claim it here.`, "warning");
+				return;
 			}
+
+			pauseCurrentLoopForSwitch(ctx, loopName);
 
 			state.status = "active";
 			state.active = true;
+			state.ownerSession = getSessionOwner(ctx);
+			state.pendingContinuation = false;
 			saveState(ctx, state);
 			currentLoop = loopName;
 			updateUI(ctx);
@@ -555,19 +614,19 @@ export default function (pi: ExtensionAPI) {
 		nuke(rest, ctx) {
 			const force = rest.trim() === "--yes";
 			const warning =
-				"This deletes all .ralph state, task, and archive files. External task files are not removed.";
+				"This deletes all Ralph state, task, and archive files under .pi/ralph. External task files are not removed.";
 
 			const run = () => {
 				const dir = ralphDir(ctx);
 				if (!fs.existsSync(dir)) {
-					if (ctx.hasUI) ctx.ui.notify("No .ralph directory found.", "info");
+					if (ctx.hasUI) ctx.ui.notify("No Ralph storage directory found.", "info");
 					return;
 				}
 
 				currentLoop = null;
 				const ok = tryRemoveDir(dir);
 				if (ctx.hasUI) {
-					ctx.ui.notify(ok ? "Removed .ralph directory." : "Failed to remove .ralph directory.", ok ? "info" : "error");
+					ctx.ui.notify(ok ? "Removed Ralph storage directory." : "Failed to remove Ralph storage directory.", ok ? "info" : "error");
 				}
 				updateUI(ctx);
 			};
@@ -593,19 +652,20 @@ export default function (pi: ExtensionAPI) {
 Commands:
   /ralph start <name|path> [options]  Start a new loop
   /ralph stop                         Pause current loop
-  /ralph resume <name>                Resume a paused loop
+  /ralph resume <name> [--takeover]   Resume a paused loop or claim it from another session
   /ralph status                       Show all loops
   /ralph cancel <name>                Delete loop state
   /ralph archive <name>               Move loop to archive
   /ralph clean [--all]                Clean completed loops
   /ralph list --archived              Show archived loops
-  /ralph nuke [--yes]                 Delete all .ralph data
+  /ralph nuke [--yes]                 Delete all Ralph data under .pi/ralph
   /ralph-stop                         Stop active loop (idle only)
 
 Options:
   --items-per-iteration N  Suggest N items per turn (prompt hint)
   --reflect-every N        Reflect every N iterations
   --max-iterations N       Stop after N iterations (default 50)
+  --takeover               Claim a loop that is currently active in another session
 
 To stop: press ESC to interrupt, then run /ralph-stop when idle
 
@@ -636,18 +696,9 @@ Examples:
 				return;
 			}
 
-			let state = currentLoop ? loadState(ctx, currentLoop) : null;
+			const state = getCurrentOwnedLoopState(ctx);
 			if (!state) {
-				const active = listLoops(ctx).find((l) => l.status === "active");
-				if (!active) {
-					if (ctx.hasUI) ctx.ui.notify("No active Ralph loop", "warning");
-					return;
-				}
-				state = active;
-			}
-
-			if (state.status !== "active") {
-				if (ctx.hasUI) ctx.ui.notify(`Loop "${state.name}" is not active`, "warning");
+				if (ctx.hasUI) ctx.ui.notify("No active Ralph loop in this session", "warning");
 				return;
 			}
 
@@ -677,12 +728,7 @@ Examples:
 			const loopName = sanitize(params.name);
 			const taskFile = path.join(RALPH_DIR, `${loopName}.md`);
 
-			if (currentLoop && currentLoop !== loopName) {
-				const current = loadState(ctx, currentLoop);
-				if (current?.status === "active") {
-					pauseLoop(ctx, current);
-				}
-			}
+			pauseCurrentLoopForSwitch(ctx, loopName);
 
 			if (loadState(ctx, loopName)?.status === "active") {
 				return { content: [{ type: "text", text: `Loop "${loopName}" already active.` }], details: {} };
@@ -702,6 +748,7 @@ Examples:
 				reflectInstructions: DEFAULT_REFLECT_INSTRUCTIONS,
 				active: true,
 				status: "active",
+				ownerSession: getSessionOwner(ctx),
 				startedAt: new Date().toISOString(),
 				lastReflectionAt: 0,
 				pendingContinuation: false,
@@ -732,13 +779,9 @@ Examples:
 		],
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			if (!currentLoop) {
+			const state = getCurrentOwnedLoopState(ctx);
+			if (!state) {
 				return { content: [{ type: "text", text: "No active Ralph loop." }], details: {} };
-			}
-
-			const state = loadState(ctx, currentLoop);
-			if (!state || state.status !== "active") {
-				return { content: [{ type: "text", text: "Ralph loop is not active." }], details: {} };
 			}
 
 			if (state.pendingContinuation) {
@@ -777,12 +820,16 @@ Examples:
 			saveState(ctx, state);
 			updateUI(ctx);
 
-			const loopName = currentLoop;
+			const loopName = state.name;
 			ctx.compact({
 				customInstructions: RALPH_COMPACT_INSTRUCTIONS,
 				onComplete: () => {
 					const latest = loadState(ctx, loopName);
 					if (!latest || latest.status !== "active" || !latest.pendingContinuation) return;
+					if (!isOwnedByCurrentSession(ctx, latest)) {
+						clearCurrentLoop(ctx);
+						return;
+					}
 
 					latest.pendingContinuation = false;
 					saveState(ctx, latest);
@@ -796,6 +843,10 @@ Examples:
 				onError: (error) => {
 					const latest = loadState(ctx, loopName);
 					if (!latest || !latest.pendingContinuation) return;
+					if (!isOwnedByCurrentSession(ctx, latest)) {
+						clearCurrentLoop(ctx);
+						return;
+					}
 
 					latest.pendingContinuation = false;
 
@@ -835,9 +886,8 @@ Examples:
 	// --- Event handlers ---
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (!currentLoop) return;
-		const state = loadState(ctx, currentLoop);
-		if (!state || state.status !== "active") return;
+		const state = getCurrentOwnedLoopState(ctx);
+		if (!state) return;
 
 		const iterStr = `${state.iteration}${state.maxIterations > 0 ? `/${state.maxIterations}` : ""}`;
 
@@ -855,9 +905,8 @@ Examples:
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		if (!currentLoop) return;
-		const state = loadState(ctx, currentLoop);
-		if (!state || state.status !== "active") return;
+		const state = getCurrentOwnedLoopState(ctx);
+		if (!state) return;
 
 		// Check for completion marker
 		const lastAssistant = [...event.messages].reverse().find((m) => m.role === "assistant");
@@ -897,15 +946,13 @@ Examples:
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		const active = listLoops(ctx).filter((l) => l.status === "active");
-		if (!currentLoop) {
-			currentLoop = active.length === 1 ? active[0].name : null;
-		}
-		if (active.length > 0 && ctx.hasUI) {
-			const lines = active.map(
+		const owned = listLoops(ctx).filter((l) => l.status === "active" && isOwnedByCurrentSession(ctx, l));
+		currentLoop = owned.length === 1 ? owned[0].name : null;
+		if (owned.length > 1 && ctx.hasUI) {
+			const lines = owned.map(
 				(l) => `  • ${l.name} (iteration ${l.iteration}${l.maxIterations > 0 ? `/${l.maxIterations}` : ""})`,
 			);
-			ctx.ui.notify(`Active Ralph loops:\n${lines.join("\n")}\n\nUse /ralph resume <name> to continue`, "info");
+			ctx.ui.notify(`Multiple Ralph loops are attached to this session:\n${lines.join("\n")}\n\nUse /ralph resume <name> to continue one.`, "warning");
 		}
 		updateUI(ctx);
 	});

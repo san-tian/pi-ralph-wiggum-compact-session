@@ -3,6 +3,7 @@ node_modules/
 *.log
 .tmp/
 .ralph/
+.pi/ralph/
 .pi/
 .env
 .env.*

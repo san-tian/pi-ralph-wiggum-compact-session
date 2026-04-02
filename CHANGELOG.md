@@ -4,12 +4,14 @@
 
 ### Fixed
 - Keep the current iteration number stable when resuming a paused loop.
-- Restore the active loop in-session when exactly one loop is still active on startup.
+- Restore only loops owned by the current Pi session on startup, avoiding cross-session prompt injection.
 - Pause the current session loop before starting a different one, avoiding hidden concurrent session state.
+- Prevent `/ralph stop`, `/ralph-stop`, and `ralph_done` from acting on loops owned by other sessions.
 
 ### Changed
 - Synced README and skill instructions with the actual `ralph_start` behavior.
 - Added package metadata and git ignore rules to keep local task state and temp payloads out of published artifacts and git.
+- Moved project-local Ralph storage from `.ralph/` to `.pi/ralph/`, with legacy directory migration.
 
 ## 0.2.0 - 2026-04-02
 

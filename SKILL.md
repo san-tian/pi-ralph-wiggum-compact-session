@@ -19,7 +19,7 @@ ralph_start({
 
 ## Loop Behavior
 
-1. **Start the loop with a complete task file body**: `ralph_start` writes `.ralph/<name>.md` from `taskContent` for you.
+1. **Start the loop with a complete task file body**: `ralph_start` writes `.pi/ralph/<name>.md` from `taskContent` for you.
 2. Work on the task and update the file each iteration.
 3. Record verification evidence (commands run, file paths, outputs) in the task file.
 4. Call `ralph_done` to proceed to the next iteration. Ralph compacts the current session before queueing the next prompt so the loop stays in one session.
@@ -37,7 +37,7 @@ ralph_start({
 - `/ralph archive <name>` - Move loop to archive.
 - `/ralph clean [--all]` - Clean completed loops.
 - `/ralph cancel <name>` - Delete loop.
-- `/ralph nuke [--yes]` - Delete all .ralph data.
+- `/ralph nuke [--yes]` - Delete all `.pi/ralph` data.
 
 Press ESC to interrupt streaming, send a normal message to resume, and run `/ralph-stop` when idle to end the loop.
 
@@ -71,4 +71,4 @@ Brief description.
 3. Capture verification evidence for completed items.
 4. Reflect when stuck to reassess approach.
 5. Output the completion marker only when truly done.
-6. Keep `.ralph/` out of git if task notes could contain sensitive information.
+6. Keep `.pi/ralph/` out of git if task notes could contain sensitive information.
