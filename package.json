@@ -25,7 +25,7 @@
     "@sinclair/typebox": "*"
   },
   "dependencies": {
-    "@san-tian/pi-project-paths": "https://codeload.github.com/san-tian/pi-project-paths/tar.gz/refs/heads/main"
+    "@san-tian/pi-project-paths": "git+https://github.com/san-tian/pi-project-paths.git"
   },
   "pi": {
     "extensions": [
